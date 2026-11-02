@@ -248,6 +248,7 @@ function machineBlocks(
       expandedCoordinatorOlderKeys: new Set(collapse.expandedCoordinatorOlderByMachine?.[machine.id] ?? []),
       worktreesLayout,
       expandedWorktreeFolderKeys: new Set(collapse.expandedWorktreeFoldersByMachine?.[machine.id] ?? []),
+      projectIdsWithSessions: new Set(inventory.summary.sessions.map((session) => session.projectId)),
     }),
   );
   if (items.length === 0) {
@@ -309,7 +310,10 @@ export function hideProjectsWithoutSessions(
     card.header.inWorktreeFolder === true ||
     card.header.keptByWorktree === true;
   let emptyProjects = 0;
+  // A left-out card counts with its nested worktrees, and a collapsed parent with the ones it hides.
+  const leftOut = (card: ProjectCardBlock): number => 1 + (card.worktrees?.length ?? 0);
   const withKeptWorktrees = (card: ProjectCardBlock): ProjectCardBlock => {
+    emptyProjects += card.header.hiddenEmptyWorktrees ?? 0;
     if (card.worktrees === undefined) return card;
     const worktrees = card.worktrees.filter(hasSessions);
     emptyProjects += card.worktrees.length - worktrees.length;
@@ -319,10 +323,13 @@ export function hideProjectsWithoutSessions(
   for (const block of blocks) {
     if (block.kind === 'project') {
       if (hasSessions(block.card)) kept.push({ ...block, card: withKeptWorktrees(block.card) });
-      else emptyProjects += 1;
+      else emptyProjects += leftOut(block.card) + (block.card.header.hiddenEmptyWorktrees ?? 0);
     } else if (block.kind === 'collection') {
-      const projects = block.projects.filter(hasSessions).map(withKeptWorktrees);
-      emptyProjects += block.projects.length - projects.length;
+      const projects: ProjectCardBlock[] = [];
+      for (const card of block.projects) {
+        if (hasSessions(card)) projects.push(withKeptWorktrees(card));
+        else emptyProjects += leftOut(card) + (card.header.hiddenEmptyWorktrees ?? 0);
+      }
       if (projects.length > 0) kept.push({ ...block, projects });
     } else {
       kept.push(block);

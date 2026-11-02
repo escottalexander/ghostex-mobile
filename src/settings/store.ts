@@ -102,8 +102,9 @@ export type GhostexSettings = {
   readAloudRate: number;
   /**
    * Settings › Sessions list: Unified (every computer's sessions in one list), Project (one
-   * computer at a time behind its tabs) or Worktrees (Project with worktrees nested). `null` until it is first taken from the selected computer's
-   * own Sidebar setting (`sessionsListSeedOf`); from then on the phone never follows the computer.
+   * computer at a time behind its tabs) or Worktrees (Project with worktrees nested). `null`
+   * until it is first taken from the selected computer's own Sidebar setting
+   * (`sessionsListSeedOf`); from then on the phone never follows the computer.
    *
    * CDXC:Sidebar 2026-11-01 DECISION:
    * User: "On phone can we please set either project or unified look for the sessions list? I think it's taking this from what's set on the desktop now", then picked a Unified / Project switch in the phone's Settings with "Group by project" and "Show Working section" marked Unified only (Q933), Unified combining every computer and Project staying per computer (Q934). Supersedes the 2026-10-30 decision that the phone follows the computer's `sidebarView`.

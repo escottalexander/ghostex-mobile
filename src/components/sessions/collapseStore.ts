@@ -3,9 +3,9 @@
  * Matching the desktop gpui sidebar request: on first start EVERYTHING
  * (collections, projects, named groups, worktree folders) is collapsed, so the
  * store tracks EXPANDED sets — absence means collapsed. Projects, collections,
- * named groups and worktree folders are persisted per machine (AsyncStorage, v2 key); the in-project
- * Browser / Pinned / Sessions kind disclosures keep desktop semantics (default
- * expanded, presence = collapsed). A saved `collapsedSessionLists` entry from
+ * named groups and worktree folders are persisted per machine (AsyncStorage,
+ * v2 key); the in-project Browser / Pinned / Sessions kind disclosures keep
+ * desktop semantics (default expanded, presence = collapsed). A saved `collapsedSessionLists` entry from
  * the retired 6-row "Show more" collapse is ignored.
  * Machine-section collapse stays in-memory only.
  */
@@ -77,6 +77,8 @@ type CollapseState = {
   toggleCoordinator: (machineId: string, coordinatorKey: string) => void;
   toggleCoordinatorOlder: (machineId: string, coordinatorKey: string) => void;
   toggleWorktreeFolder: (machineId: string, folderKey: string) => void;
+  /** Forgets a worktree folder's open state (a folder made or deleted starts closed). */
+  closeWorktreeFolder: (machineId: string, folderKey: string) => void;
   toggleMachine: (machineId: string) => void;
   /**
    * Opens a project and its Drafts heading for a session that just arrived in Drafts
@@ -253,6 +255,12 @@ export const useCollapseStore = create<CollapseState>()((set, get) => {
       toggleIn('expandedCoordinatorOlderByMachine', machineId, coordinatorKey),
 
     toggleWorktreeFolder: (machineId, folderKey) => toggleIn('expandedWorktreeFoldersByMachine', machineId, folderKey),
+
+    closeWorktreeFolder: (machineId, folderKey) => {
+      const current = get().expandedWorktreeFoldersByMachine;
+      if (!(current[machineId] ?? []).includes(folderKey)) return;
+      toggleIn('expandedWorktreeFoldersByMachine', machineId, folderKey);
+    },
 
     openDrafts: (machineId, projectKey) => {
       const draftsKey = `${projectKey}|drafts`;

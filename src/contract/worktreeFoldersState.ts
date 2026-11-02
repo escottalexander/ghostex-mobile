@@ -45,8 +45,9 @@ export function cloneWorktreeFoldersState(raw: unknown): GhostexWorktreeFoldersS
     for (const entry of raw.folders) {
       if (!isObject(entry)) continue;
       const folderId = trimmed(entry.folderId);
+      const title = trimmed(entry.title);
       const parentProjectId = trimmed(entry.parentProjectId);
-      if (folderId.length === 0 || parentProjectId.length === 0 || seen.has(folderId)) continue;
+      if (folderId.length === 0 || title.length === 0 || parentProjectId.length === 0 || seen.has(folderId)) continue;
       seen.add(folderId);
       const worktreeProjectIds: string[] = [];
       if (Array.isArray(entry.worktreeProjectIds)) {
@@ -55,7 +56,7 @@ export function cloneWorktreeFoldersState(raw: unknown): GhostexWorktreeFoldersS
           if (projectId.length > 0 && !worktreeProjectIds.includes(projectId)) worktreeProjectIds.push(projectId);
         }
       }
-      state.folders.push({ folderId, title: trimmed(entry.title) || 'Group', parentProjectId, worktreeProjectIds });
+      state.folders.push({ folderId, title, parentProjectId, worktreeProjectIds });
     }
   }
   if (typeof raw.nextFolderNumber === 'number' && Number.isFinite(raw.nextFolderNumber)) {

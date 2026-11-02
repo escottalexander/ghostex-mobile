@@ -150,6 +150,8 @@ export type ProjectHeaderItem = {
   keptByWorktree?: boolean;
   /** A nested worktree with a session linked to a merged pull request: its header shows "merged". */
   worktreeMerged?: boolean;
+  /** Worktrees layout, a collapsed parent: its hidden worktrees that hiding empty projects would leave out. */
+  hiddenEmptyWorktrees?: number;
 };
 
 /** Where a nested worktree is drawn: under its parent project, in one of its folders or loose. */
@@ -660,6 +662,11 @@ export type DrawerBuildInput = {
   worktreesLayout?: boolean;
   /** Open worktree folders, keyed by worktreeFolderKey() (persisted per machine). Absence = closed. */
   expandedWorktreeFolderKeys?: ReadonlySet<string>;
+  /**
+   * The projects with a session on the computer, before any Space or workspace filter: what hiding
+   * empty projects reads (drawerModel.ts `hideProjectsWithoutSessions`). Defaults to `summary`'s.
+   */
+  projectIdsWithSessions?: ReadonlySet<string>;
 };
 
 /** Whether a session is linked to a pull request in state merged (gx-core groups.rs `links_merged`). */
@@ -690,6 +697,7 @@ function worktreeFamilies(
   projectById: ReadonlyMap<string, GhostexProject>,
   orderedProjectKeys: readonly string[],
   presentKeys: ReadonlySet<string>,
+  withSessions: ReadonlySet<string>,
 ): WorktreeFamilies {
   const collectionOf = new Map<string, string>();
   for (const collection of summary.projectCollections) {
@@ -697,7 +705,6 @@ function worktreeFamilies(
       if (!collectionOf.has(projectId)) collectionOf.set(projectId, collection.collectionId);
     }
   }
-  const withSessions = new Set(summary.sessions.map((session) => session.projectId));
   const families: WorktreeFamilies = {
     nestOf: new Map(),
     childrenOf: new Map(),
@@ -815,9 +822,10 @@ export function buildDrawerItems(input: DrawerBuildInput): DrawerItem[] {
 
   const items: DrawerItem[] = [];
 
+  const withSessions = input.projectIdsWithSessions ?? new Set(summary.sessions.map((session) => session.projectId));
   const families =
     input.worktreesLayout === true
-      ? worktreeFamilies(summary, projectById, orderedProjectKeys, new Set(sessionsByProjectKey.keys()))
+      ? worktreeFamilies(summary, projectById, orderedProjectKeys, new Set(sessionsByProjectKey.keys()), withSessions)
       : null;
   const sessionsOfKeys = (keys: readonly string[]): GhostexSession[] =>
     keys.flatMap((key) => sessionsByProjectKey.get(key) ?? []);
@@ -839,6 +847,12 @@ export function buildDrawerItems(input: DrawerBuildInput): DrawerItem[] {
       collapsed && families !== null ? sessionsOfKeys(families.childrenOf.get(projectKey) ?? []) : [];
     const counts = countSessions([...allProjectSessions, ...hiddenFamilySessions]);
     const nest = families?.nestOf.get(projectKey);
+    const hiddenEmptyWorktrees =
+      collapsed && families !== null
+        ? (families.childrenOf.get(projectKey) ?? []).filter(
+            (child) => !families.inFolder.has(child) && !withSessions.has(child.slice(3)),
+          ).length
+        : 0;
     const icon: GhostexProjectIcon =
       project !== null
         ? project.icon
@@ -915,6 +929,7 @@ export function buildDrawerItems(input: DrawerBuildInput): DrawerItem[] {
       ...(families?.inFolder.has(projectKey) === true ? { inWorktreeFolder: true } : {}),
       ...(families?.keptParents.has(projectKey) === true ? { keptByWorktree: true } : {}),
       ...(nest !== undefined && allProjectSessions.some(linksMerged) ? { worktreeMerged: true } : {}),
+      ...(hiddenEmptyWorktrees > 0 ? { hiddenEmptyWorktrees } : {}),
     });
     if (collapsed) return;
 

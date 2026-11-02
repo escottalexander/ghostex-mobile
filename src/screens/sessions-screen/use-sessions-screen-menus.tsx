@@ -82,15 +82,17 @@ import {
   stateWithoutProject,
   stateWithProjectInCollection,
 } from '../../contract/collectionsState';
-import type { ProjectHeaderItem } from '../../contract/grouping';
+import { worktreeFolderKey, type ProjectHeaderItem } from '../../contract/grouping';
 import {
   createFolderWithWorktree,
   deleteFolder,
   foldersOfParent,
   moveWorktreeToFolder,
+  cloneWorktreeFoldersState,
   removeWorktreeFromFolder,
   renameFolder,
   type GhostexWorktreeFoldersState,
+  type WorktreeFolderEdit,
 } from '../../contract/worktreeFoldersState';
 import {
   agentIconTint,
@@ -165,6 +167,7 @@ export type SessionsScreenMenusDeps = {
   collapse: {
     collapseAllProjects: (machineId: string) => void;
     expandAllProjects: (machineId: string, projectKeys: string[], collectionIds: string[]) => void;
+    closeWorktreeFolder: (machineId: string, folderKey: string) => void;
   };
   lastActionByProject: Record<string, string>;
   navigation: SessionsNavigation;
@@ -254,20 +257,46 @@ export function useSessionsScreenMenus({
   );
 
   /**
-   * Writes the whole worktree folders document to gxserver (`/api/updateSidebarWorktreeFolders`,
-   * the route the desktop uses; no `ghostex` verb reaches it), then refreshes the machine.
+   * Applies `edit` to the computer's current worktree folders document and writes the whole result
+   * back, through the routes the desktop uses (`/api/readSidebarWorktreeFolders`,
+   * `/api/updateSidebarWorktreeFolders`; no `ghostex` verb reaches them), then refreshes the machine.
+   * The summary leaves the document out while it has no folders, so it cannot be the base: its
+   * folder counter would be lost and an older summary would undo another client's edits. A folder
+   * the edit adds or removes forgets its open state, so a new folder starts closed.
    */
   const runWorktreeFoldersUpdate = useCallback(
-    async (target: MachineRecord, state: GhostexWorktreeFoldersState): Promise<void> => {
+    async (target: MachineRecord, edit: (live: GhostexWorktreeFoldersState) => WorktreeFolderEdit): Promise<void> => {
       setOverlay(NONE);
-      const answer = await chatMachineLink(target).rpc('updateSidebarWorktreeFolders', { state }, 15_000);
+      const link = chatMachineLink(target);
+      const read = await link.rpc('readSidebarWorktreeFolders', {}, 15_000);
+      if (read.error !== null) {
+        setTransientStatus(`Couldn't read the worktree groups: ${read.error.message}`);
+        return;
+      }
+      const result = read.result as { sidebarWorktreeFolders?: unknown } | null;
+      const live = cloneWorktreeFoldersState(result?.sidebarWorktreeFolders);
+      const edited = edit(live);
+      if (edited.state === null) {
+        setTransientStatus(edited.error);
+        return;
+      }
+      const state = edited.state;
+      const answer = await link.rpc('updateSidebarWorktreeFolders', { state }, 15_000);
       if (answer.error !== null) {
         setTransientStatus(`Couldn't change the worktree groups: ${answer.error.message}`);
         return;
       }
+      const ids = (doc: GhostexWorktreeFoldersState) => new Set(doc.folders.map((folder) => folder.folderId));
+      const before = ids(live);
+      const after = ids(state);
+      for (const folder of [...live.folders, ...state.folders]) {
+        if (before.has(folder.folderId) !== after.has(folder.folderId)) {
+          collapse.closeWorktreeFolder(target.id, worktreeFolderKey(folder.parentProjectId, folder.folderId));
+        }
+      }
       await refreshMachine(target);
     },
-    [refreshMachine, setOverlay, setTransientStatus],
+    [collapse, refreshMachine, setOverlay, setTransientStatus],
   );
 
   const collectionMemberSessions = (ctx: CollectionContext): GhostexSession[] => {
@@ -740,7 +769,6 @@ export function useSessionsScreenMenus({
           const projectId = scope.project?.header.projectId ?? '';
           if (nest === undefined || projectId.length === 0)
             throw new Error('A worktree group change needs a worktree.');
-          const state = summaryFor(machine.id)?.worktreeFolders ?? null;
           if (menuCommand.action === 'create') {
             setOverlay({
               kind: 'worktreeFolderName',
@@ -751,12 +779,14 @@ export function useSessionsScreenMenus({
             return;
           }
           if (menuCommand.action === 'remove') {
-            void runWorktreeFoldersUpdate(machine, removeWorktreeFromFolder(state, projectId));
+            void runWorktreeFoldersUpdate(machine, (live) => ({
+              state: removeWorktreeFromFolder(live, projectId),
+              error: null,
+            }));
             return;
           }
-          const moved = moveWorktreeToFolder(state, menuCommand.folderId ?? '', projectId);
-          if (moved.state === null) throw new Error(moved.error);
-          void runWorktreeFoldersUpdate(machine, moved.state);
+          const folderId = menuCommand.folderId ?? '';
+          void runWorktreeFoldersUpdate(machine, (live) => moveWorktreeToFolder(live, folderId, projectId));
           return;
         }
         case 'projectMembership': {
@@ -859,10 +889,7 @@ export function useSessionsScreenMenus({
     const orderedHeaders: ProjectHeaderItem[] = [];
     for (const block of entries) {
       if (block.machineId !== ctx.machine.id) continue;
-      if (block.kind === 'project') orderedHeaders.push(block.card.header);
-      else if (block.kind === 'collection') {
-        for (const projectBlock of block.projects) orderedHeaders.push(projectBlock.header);
-      }
+      for (const card of cardsOfBlock(block)) orderedHeaders.push(card.header);
     }
     const orderedProjectIds = orderedHeaders
       .map((entry) => entry.projectId)
@@ -1214,26 +1241,29 @@ export function useSessionsScreenMenus({
           body: `Delete group “${ctx.item.title}”? Its worktrees move back to the list.`,
           confirmLabel: 'Delete Group',
           run: () =>
-            void runWorktreeFoldersUpdate(
-              ctx.machine,
-              deleteFolder(summaryFor(ctx.machine.id)?.worktreeFolders ?? null, ctx.item.folderId),
-            ),
+            void runWorktreeFoldersUpdate(ctx.machine, (live) => ({
+              state: deleteFolder(live, ctx.item.folderId),
+              error: null,
+            })),
         }),
     },
   ];
 
-  /** New group… and Rename…'s name box: the edit, or its message under the box. */
+  /**
+   * New group… and Rename…'s name box: checked against the summary so a bad name shows under the
+   * box, then applied to the computer's current document.
+   */
   const submitWorktreeFolderName = (machine: MachineRecord, edit: WorktreeFolderNameEdit, value: string): void => {
-    const state = summaryFor(machine.id)?.worktreeFolders ?? null;
-    const result =
+    const apply = (state: GhostexWorktreeFoldersState | null): WorktreeFolderEdit =>
       edit.kind === 'create'
         ? createFolderWithWorktree(state, edit.parentProjectId, value, edit.worktreeProjectId)
         : renameFolder(state, edit.folderId, value);
-    if (result.state === null) {
-      setOverlay({ kind: 'worktreeFolderName', machine, edit, error: result.error });
+    const preview = apply(summaryFor(machine.id)?.worktreeFolders ?? null);
+    if (preview.state === null) {
+      setOverlay({ kind: 'worktreeFolderName', machine, edit, error: preview.error });
       return;
     }
-    void runWorktreeFoldersUpdate(machine, result.state);
+    void runWorktreeFoldersUpdate(machine, apply);
   };
 
   /**
