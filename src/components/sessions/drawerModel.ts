@@ -17,6 +17,7 @@ import {
   type CollectionHeaderItem,
   type DrawerItem,
   type ProjectHeaderItem,
+  type WorktreeFolderHeaderItem,
 } from '../../contract/grouping';
 import type { GhostexMobileSummary } from '../../contract/mobileSummary';
 import { StateCardCopy } from '../../copy';
@@ -28,7 +29,26 @@ import { filterSummaryForWorkspace } from '../../workspaces/workspaceFilter';
 export type ProjectCardBlock = {
   header: ProjectHeaderItem;
   children: DrawerItem[];
+  /** Worktrees layout: the open project's worktrees in no folder, drawn inside its block. */
+  worktrees?: ProjectCardBlock[];
+  /** Worktrees layout: the open project's worktree folders, each with its shown members. */
+  worktreeFolders?: WorktreeFolderBlock[];
 };
+
+export type WorktreeFolderBlock = {
+  header: WorktreeFolderHeaderItem;
+  members: ProjectCardBlock[];
+};
+
+/** Every project card of a block, nested worktrees included. */
+export function cardsOfBlock(block: DrawerBlock): ProjectCardBlock[] {
+  const roots = block.kind === 'project' ? [block.card] : block.kind === 'collection' ? block.projects : [];
+  return roots.flatMap((card) => [
+    card,
+    ...(card.worktrees ?? []),
+    ...(card.worktreeFolders ?? []).flatMap((folder) => folder.members),
+  ]);
+}
 
 export type DrawerBlock =
   | { kind: 'row'; listKey: string; machineId: string; item: DrawerItem }
@@ -50,6 +70,7 @@ export type DrawerCollapseInput = {
   expandedCoordinatorOlderByMachine?: Record<string, string[]>;
   expandedParkedSessionKeysByMachine?: Record<string, string[]>;
   expandedDraftSessionKeysByMachine?: Record<string, string[]>;
+  expandedWorktreeFoldersByMachine?: Record<string, string[]>;
 };
 
 export type DrawerListInput = {
@@ -66,6 +87,8 @@ export type DrawerListInput = {
   /** Resolved workspace id for the selected machine; null when it has no workspaces. */
   selectedWorkspaceId: string | null;
   collapse: DrawerCollapseInput;
+  /** The Worktrees layout (Settings › Sessions list). */
+  worktreesLayout?: boolean;
 };
 
 function rowBlock(machineId: string, item: DrawerItem): DrawerBlock {
@@ -106,6 +129,29 @@ export function blocksFromItems(machineId: string, items: DrawerItem[]): DrawerB
     return { header, children };
   };
 
+  /** A project's card, then the worktrees and worktree folders the builder put after it. */
+  const collectFamily = (header: ProjectHeaderItem): ProjectCardBlock => {
+    const card = collectCard(header);
+    while (index < items.length) {
+      const next = items[index];
+      if (next.type === 'WORKTREE_FOLDER_HEADER' && next.projectKey === header.projectKey) {
+        index++;
+        (card.worktreeFolders ??= []).push({ header: next, members: [] });
+        continue;
+      }
+      if (next.type !== 'PROJECT_HEADER' || next.worktreeNest?.parentProjectKey !== header.projectKey) break;
+      index++;
+      const member = collectCard(next);
+      const folder = card.worktreeFolders?.[card.worktreeFolders.length - 1];
+      if (next.worktreeNest.folderId !== null && folder?.header.folderId === next.worktreeNest.folderId) {
+        folder.members.push(member);
+      } else {
+        (card.worktrees ??= []).push(member);
+      }
+    }
+    return card;
+  };
+
   while (index < items.length) {
     const item = items[index];
     if (item.type === 'COLLECTION_HEADER') {
@@ -115,7 +161,7 @@ export function blocksFromItems(machineId: string, items: DrawerItem[]): DrawerB
         const member = items[index];
         if (member.type !== 'PROJECT_HEADER' || member.collectionColor === undefined) break;
         index++;
-        projects.push(collectCard(member));
+        projects.push(collectFamily(member));
       }
       blocks.push({
         kind: 'collection',
@@ -132,7 +178,7 @@ export function blocksFromItems(machineId: string, items: DrawerItem[]): DrawerB
         kind: 'project',
         listKey: `${machineId}:${item.key}`,
         machineId,
-        card: collectCard(item),
+        card: collectFamily(item),
       });
       continue;
     }
@@ -150,6 +196,7 @@ function machineBlocks(
   collapse: DrawerCollapseInput,
   nowMs: number,
   selectedSessionKey: string | null,
+  worktreesLayout: boolean,
 ): DrawerBlock[] {
   const label = machineDisplayLabel(machine);
   if (inventory === undefined || (inventory.summary === null && !inventory.hasLoaded)) {
@@ -199,6 +246,8 @@ function machineBlocks(
       expandedParkedSessionKeys: new Set(collapse.expandedParkedSessionKeysByMachine?.[machine.id] ?? []),
       collapsedCoordinatorKeys: new Set(collapse.collapsedCoordinatorsByMachine?.[machine.id] ?? []),
       expandedCoordinatorOlderKeys: new Set(collapse.expandedCoordinatorOlderByMachine?.[machine.id] ?? []),
+      worktreesLayout,
+      expandedWorktreeFolderKeys: new Set(collapse.expandedWorktreeFoldersByMachine?.[machine.id] ?? []),
     }),
   );
   if (items.length === 0) {
@@ -236,6 +285,7 @@ export function buildDrawerList(input: DrawerListInput): DrawerBlock[] {
     collapse,
     input.nowMs ?? Date.now(),
     input.selectedSessionKey ?? null,
+    input.worktreesLayout === true,
   );
 }
 
@@ -253,15 +303,25 @@ export function hideProjectsWithoutSessions(
 ): { blocks: DrawerBlock[]; emptyProjects: number } {
   if (summary?.sidebarHideProjectsWithoutSessions !== true) return { blocks, emptyProjects: 0 };
   const withSessions = new Set(summary.sessions.map((session) => session.projectId));
-  const hasSessions = (card: ProjectCardBlock): boolean => withSessions.has(card.header.projectId);
+  // Worktrees layout: a worktree in a folder always stays, and so does a project one of whose worktrees stays.
+  const hasSessions = (card: ProjectCardBlock): boolean =>
+    withSessions.has(card.header.projectId) ||
+    card.header.inWorktreeFolder === true ||
+    card.header.keptByWorktree === true;
   let emptyProjects = 0;
+  const withKeptWorktrees = (card: ProjectCardBlock): ProjectCardBlock => {
+    if (card.worktrees === undefined) return card;
+    const worktrees = card.worktrees.filter(hasSessions);
+    emptyProjects += card.worktrees.length - worktrees.length;
+    return { ...card, worktrees };
+  };
   const kept: DrawerBlock[] = [];
   for (const block of blocks) {
     if (block.kind === 'project') {
-      if (hasSessions(block.card)) kept.push(block);
+      if (hasSessions(block.card)) kept.push({ ...block, card: withKeptWorktrees(block.card) });
       else emptyProjects += 1;
     } else if (block.kind === 'collection') {
-      const projects = block.projects.filter(hasSessions);
+      const projects = block.projects.filter(hasSessions).map(withKeptWorktrees);
       emptyProjects += block.projects.length - projects.length;
       if (projects.length > 0) kept.push({ ...block, projects });
     } else {

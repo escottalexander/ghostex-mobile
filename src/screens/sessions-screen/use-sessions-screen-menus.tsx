@@ -21,7 +21,7 @@ import { AGENT_ICONS } from '../../assets/agentIcons.generated';
 import { isSessionChatSupportedAgent } from '../../chat/session-chat-helpers';
 import { runGhostexCli } from '../../components/sessions/cli';
 import { type ContextMenuItem } from '../../components/sessions/ContextMenu';
-import { type DrawerBlock } from '../../components/sessions/drawerModel';
+import { cardsOfBlock, type DrawerBlock } from '../../components/sessions/drawerModel';
 import {
   ArrowGlyph,
   ChevronDownGlyph,
@@ -84,6 +84,15 @@ import {
 } from '../../contract/collectionsState';
 import type { ProjectHeaderItem } from '../../contract/grouping';
 import {
+  createFolderWithWorktree,
+  deleteFolder,
+  foldersOfParent,
+  moveWorktreeToFolder,
+  removeWorktreeFromFolder,
+  renameFolder,
+  type GhostexWorktreeFoldersState,
+} from '../../contract/worktreeFoldersState';
+import {
   agentIconTint,
   displayStatus,
   EMPTY_CUSTOM_SESSION_TAGS,
@@ -123,6 +132,8 @@ import {
   type ParkedContext,
   type ProjectContext,
   type SessionContext,
+  type WorktreeFolderContext,
+  type WorktreeFolderNameEdit,
 } from './session-actions';
 import { NEW_ORCHESTRATOR_BENEFITS, parseCoordinatorOptions, type CoordinatorOptions } from './NewCoordinatorSheet';
 import {
@@ -242,6 +253,23 @@ export function useSessionsScreenMenus({
     [runSessionCommand],
   );
 
+  /**
+   * Writes the whole worktree folders document to gxserver (`/api/updateSidebarWorktreeFolders`,
+   * the route the desktop uses; no `ghostex` verb reaches it), then refreshes the machine.
+   */
+  const runWorktreeFoldersUpdate = useCallback(
+    async (target: MachineRecord, state: GhostexWorktreeFoldersState): Promise<void> => {
+      setOverlay(NONE);
+      const answer = await chatMachineLink(target).rpc('updateSidebarWorktreeFolders', { state }, 15_000);
+      if (answer.error !== null) {
+        setTransientStatus(`Couldn't change the worktree groups: ${answer.error.message}`);
+        return;
+      }
+      await refreshMachine(target);
+    },
+    [refreshMachine, setOverlay, setTransientStatus],
+  );
+
   const collectionMemberSessions = (ctx: CollectionContext): GhostexSession[] => {
     const summary = summaryFor(ctx.machine.id);
     if (summary === null) return [];
@@ -293,8 +321,7 @@ export function useSessionsScreenMenus({
         }
         return below;
       }
-      const cards = block.kind === 'project' ? [block.card] : block.projects;
-      for (const card of cards) {
+      for (const card of cardsOfBlock(block)) {
         const pressedIndex = card.children.findIndex((child) => child.key === ctx.item.key);
         if (pressedIndex < 0) continue;
         const below: GhostexSession[] = [];
@@ -708,6 +735,30 @@ export function useSessionsScreenMenus({
           void resolveCoordinatorThread(machine, ctx.item.session, menuCommand.action === 'markDone');
           return;
         }
+        case 'worktreeFolderMembership': {
+          const nest = scope.project?.header.worktreeNest;
+          const projectId = scope.project?.header.projectId ?? '';
+          if (nest === undefined || projectId.length === 0)
+            throw new Error('A worktree group change needs a worktree.');
+          const state = summaryFor(machine.id)?.worktreeFolders ?? null;
+          if (menuCommand.action === 'create') {
+            setOverlay({
+              kind: 'worktreeFolderName',
+              machine,
+              edit: { kind: 'create', parentProjectId: nest.parentProjectId, worktreeProjectId: projectId },
+              error: null,
+            });
+            return;
+          }
+          if (menuCommand.action === 'remove') {
+            void runWorktreeFoldersUpdate(machine, removeWorktreeFromFolder(state, projectId));
+            return;
+          }
+          const moved = moveWorktreeToFolder(state, menuCommand.folderId ?? '', projectId);
+          if (moved.state === null) throw new Error(moved.error);
+          void runWorktreeFoldersUpdate(machine, moved.state);
+          return;
+        }
         case 'projectMembership': {
           const ctx = scope.project;
           if (ctx === undefined) throw new Error('A project group change needs a project.');
@@ -791,6 +842,13 @@ export function useSessionsScreenMenus({
       sessions: sessionsForProject(ctx.machine, header),
       collectionId: collectionIdForProject(summary?.projectCollectionsState ?? null, header.projectId),
       collections: summary?.projectCollections ?? [],
+      worktreeFolders:
+        header.worktreeNest === undefined
+          ? undefined
+          : {
+              folders: foldersOfParent(summary?.worktreeFolders, header.worktreeNest.parentProjectId),
+              currentFolderId: header.worktreeNest.folderId,
+            },
     });
     const view = sidebarMenuView(menu, menuPath, {
       openPath: (next) => setOverlay({ kind: 'projectMenu', ctx, menuPath: next }),
@@ -1122,6 +1180,60 @@ export function useSessionsScreenMenus({
         }),
     });
     return items;
+  };
+
+  /**
+   * A worktree group's menu (gx-core `worktree_folder_menu`): Rename… and Delete Group. Deleting only
+   * moves its worktrees back to the list; no worktree or session is closed.
+   */
+  const worktreeFolderMenuItems = (ctx: WorktreeFolderContext): ContextMenuItem[] => [
+    {
+      kind: 'item',
+      key: 'rename',
+      label: 'Rename…',
+      icon: <PencilGlyph size={14} color={menuIconColor} />,
+      onPress: () =>
+        setOverlay({
+          kind: 'worktreeFolderName',
+          machine: ctx.machine,
+          edit: { kind: 'rename', folderId: ctx.item.folderId, title: ctx.item.title },
+          error: null,
+        }),
+    },
+    { kind: 'separator', key: 'sep-1' },
+    {
+      kind: 'item',
+      key: 'delete',
+      label: 'Delete Group',
+      icon: <TrashGlyph size={14} color={dangerIconColor} />,
+      destructive: true,
+      onPress: () =>
+        setOverlay({
+          kind: 'confirmAction',
+          title: 'Delete group?',
+          body: `Delete group “${ctx.item.title}”? Its worktrees move back to the list.`,
+          confirmLabel: 'Delete Group',
+          run: () =>
+            void runWorktreeFoldersUpdate(
+              ctx.machine,
+              deleteFolder(summaryFor(ctx.machine.id)?.worktreeFolders ?? null, ctx.item.folderId),
+            ),
+        }),
+    },
+  ];
+
+  /** New group… and Rename…'s name box: the edit, or its message under the box. */
+  const submitWorktreeFolderName = (machine: MachineRecord, edit: WorktreeFolderNameEdit, value: string): void => {
+    const state = summaryFor(machine.id)?.worktreeFolders ?? null;
+    const result =
+      edit.kind === 'create'
+        ? createFolderWithWorktree(state, edit.parentProjectId, value, edit.worktreeProjectId)
+        : renameFolder(state, edit.folderId, value);
+    if (result.state === null) {
+      setOverlay({ kind: 'worktreeFolderName', machine, edit, error: result.error });
+      return;
+    }
+    void runWorktreeFoldersUpdate(machine, result.state);
   };
 
   /**
@@ -1641,6 +1753,8 @@ export function useSessionsScreenMenus({
     collectionColorItems,
     groupMenuItems,
     parkedMenuItems,
+    worktreeFolderMenuItems,
+    submitWorktreeFolderName,
     machineMenuItems,
     appMenuItems,
     sectionMenuItems,

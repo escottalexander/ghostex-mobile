@@ -7,6 +7,7 @@
 import { type GhostexClaudeCloud, parseClaudeCloud } from './claudeCloud';
 import { programStatusFailed, programStatusLine } from './programStatus';
 import { sessionNotesOnIn } from '../sessions/sessionNotesSwitch';
+import { cloneWorktreeFoldersState, type GhostexWorktreeFoldersState } from './worktreeFoldersState';
 
 // ---------------------------------------------------------------------------
 // Wire types (what the CLI emits; everything except sessionId is optional).
@@ -123,6 +124,8 @@ export type MobileSummaryWireRoot = {
   sidebarProjectCollections?: unknown;
   /** Server-normalized saved sidebar filters: {order, spaces}. */
   sidebarSpaces?: unknown;
+  /** Worktree folders: {folders, nextFolderNumber}; absent when the computer has none. */
+  sidebarWorktreeFolders?: unknown;
   /** Server-normalized custom session tag catalog: {order, tags}; absent when the daemon has none. */
   customSessionTags?: unknown;
   /** This computer's workspaces (`SidebarWorkspacesState`); absent on a daemon without workspaces. */
@@ -648,9 +651,12 @@ export type GhostexMobileSummary = {
   newSessionAgentScope?: 'space' | 'everywhere';
   /**
    * The computer's Settings > Sidebar & Sessions > Sidebar: `unified` draws the session list as the
-   * Unified sidebar (contract/unified/); absent means the Project sidebar, the default.
+   * Unified sidebar (contract/unified/), `worktrees` nests worktrees under their parent project;
+   * absent means the Project sidebar, the default.
    */
-  sidebarView?: 'project' | 'unified';
+  sidebarView?: 'project' | 'unified' | 'worktrees';
+  /** The computer's worktree folders (`sidebarWorktreeFolders`); absent when it has none. */
+  worktreeFolders?: GhostexWorktreeFoldersState;
   /** The Unified sidebar's Working section switch; on unless the computer sends `false`. */
   unifiedWorkingSection?: boolean;
   /** Group by Project in the Unified sidebar. */
@@ -1707,7 +1713,10 @@ function normalizeRoot(root: JsonObject): GhostexMobileSummary {
       root.newSessionAgentScope === 'space' || root.newSessionAgentScope === 'everywhere'
         ? root.newSessionAgentScope
         : undefined,
-    sidebarView: root.sidebarView === 'unified' ? 'unified' : 'project',
+    sidebarView: root.sidebarView === 'unified' || root.sidebarView === 'worktrees' ? root.sidebarView : 'project',
+    worktreeFolders: isObject(root.sidebarWorktreeFolders)
+      ? cloneWorktreeFoldersState(root.sidebarWorktreeFolders)
+      : undefined,
     unifiedWorkingSection: root.unifiedWorkingSection !== false,
     unifiedGroupByProject: root.unifiedGroupByProject === true,
     unifiedProjectOrder: Array.isArray(root.unifiedProjectOrder)

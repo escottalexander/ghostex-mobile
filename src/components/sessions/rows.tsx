@@ -26,7 +26,7 @@ import {
 } from '../../contract/mobileSummary';
 import type { SectionStatusCounts } from '../../contract/grouping';
 import { decodeBase64Utf8 } from '../../docs/remoteFiles';
-import { GhostexPalette, mixHexColors, SidebarPalette } from '../../theme/palette';
+import { colorWithOpacity, GhostexPalette, mixHexColors, SidebarPalette } from '../../theme/palette';
 import { measureInWindow as measurePress } from '../common/measureInWindow';
 import type { MenuAnchor } from './ContextMenu';
 import {
@@ -34,6 +34,8 @@ import {
   ChevronDownGlyph,
   ChevronRightGlyph,
   FolderGlyph,
+  FolderOpenGlyph,
+  GitBranchGlyph,
   MoreGlyph,
   PlusGlyph,
   TerminalGlyph,
@@ -866,6 +868,7 @@ function SidebarHeaderBox({
   containsActive,
   onToggle,
   onMenu,
+  accessory,
   children,
 }: {
   title: string;
@@ -874,6 +877,8 @@ function SidebarHeaderBox({
   containsActive: boolean;
   onToggle: () => void;
   onMenu: (anchor: MenuAnchor) => void;
+  /** Drawn right after the name (a nested worktree's "merged" tag). */
+  accessory?: ReactNode;
   /** What sits after the name: closed, the counts; open, the buttons. */
   children: ReactNode;
 }) {
@@ -900,6 +905,7 @@ function SidebarHeaderBox({
       <Text style={headerBoxStyles.title} numberOfLines={1}>
         {title}
       </Text>
+      {accessory}
       {children}
     </Pressable>
   );
@@ -972,6 +978,8 @@ export function ProjectHeaderRow({
   backgroundWorkCount,
   awakeCount,
   primaryAgent,
+  nestedWorktree = false,
+  merged = false,
   onToggle,
   onLaunchPrimary,
   onCreateTerminal,
@@ -981,6 +989,10 @@ export function ProjectHeaderRow({
   title: string;
   /** Project identity, ranked by ProjectIcon like the desktop header does. */
   icon: GhostexProjectIcon;
+  /** A worktree under its parent: a small branch mark instead of repeating the parent's icon. */
+  nestedWorktree?: boolean;
+  /** A nested worktree with a merged pull request: the "merged" tag after its name. */
+  merged?: boolean;
   collapsed: boolean;
   /** Collapsed with the open session inside. */
   containsActive: boolean;
@@ -1000,11 +1012,24 @@ export function ProjectHeaderRow({
   return (
     <SidebarHeaderBox
       title={title}
-      leading={<ProjectIcon icon={icon} title={title} />}
+      leading={
+        nestedWorktree ? (
+          <GitBranchGlyph size={ds(12)} color={SIDEBAR_MUTED} />
+        ) : (
+          <ProjectIcon icon={icon} title={title} />
+        )
+      }
       collapsed={collapsed}
       containsActive={containsActive}
       onToggle={onToggle}
       onMenu={onMenu}
+      accessory={
+        nestedWorktree && merged ? (
+          <View style={worktreeStyles.mergedTag}>
+            <Text style={worktreeStyles.mergedText}>merged</Text>
+          </View>
+        ) : null
+      }
     >
       {collapsed ? (
         <ProjectStatusCounts
@@ -1035,6 +1060,104 @@ export function ProjectHeaderRow({
     </SidebarHeaderBox>
   );
 }
+
+// ---------------------------------------------------------------------------
+// WORKTREE_FOLDER_HEADER (desktop native_sidebar/worktree_tree.rs): the project
+// header's box and height with no chevron: an open or closed folder sits in the
+// chevron's column, then the muted name and the member count, after a needs-you
+// dot while the folder is closed. A tap opens or closes it; a long press opens
+// its menu.
+// ---------------------------------------------------------------------------
+
+const NEEDS_YOU_COLORS = {
+  approval: SidebarPalette.ROW_APPROVAL,
+  question: SidebarPalette.ROW_QUESTION,
+  attention: SidebarPalette.ROW_ATTENTION,
+} as const;
+
+export function WorktreeFolderRow({
+  title,
+  count,
+  expanded,
+  needsYou,
+  onPress,
+  onMenu,
+}: {
+  title: string;
+  count: number;
+  expanded: boolean;
+  needsYou: keyof typeof NEEDS_YOU_COLORS | null;
+  onPress: () => void;
+  onMenu: (anchor: MenuAnchor) => void;
+}) {
+  const rowRef = useRef<ViewInstance | null>(null);
+  return (
+    <Pressable
+      ref={rowRef}
+      accessibilityRole="button"
+      accessibilityState={{ expanded }}
+      accessibilityLabel={title}
+      style={({ pressed }) => [headerBoxStyles.row, pressed ? headerBoxStyles.rowPressed : null]}
+      onPress={onPress}
+      onLongPress={() => measurePress(rowRef, onMenu)}
+    >
+      <View pointerEvents="none" style={[headerBoxStyles.chevron, worktreeStyles.folderIcon]}>
+        {expanded ? (
+          <FolderOpenGlyph size={ds(14)} color={SIDEBAR_MUTED} />
+        ) : (
+          <FolderGlyph size={ds(14)} color={SIDEBAR_MUTED} />
+        )}
+      </View>
+      <Text style={[headerBoxStyles.title, worktreeStyles.folderTitle]} numberOfLines={1}>
+        {title}
+      </Text>
+      <View style={worktreeStyles.folderCount}>
+        {needsYou !== null ? (
+          <View style={[worktreeStyles.needsYouDot, { backgroundColor: NEEDS_YOU_COLORS[needsYou] }]} />
+        ) : null}
+        <Text style={worktreeStyles.folderCountText}>{count}</Text>
+      </View>
+    </Pressable>
+  );
+}
+
+const worktreeStyles = StyleSheet.create({
+  /* worktree_tree.rs `merged_tag`: the link badge's merged purple, a half-strength border. */
+  mergedTag: {
+    paddingHorizontal: ds(4),
+    borderRadius: ds(4),
+    borderWidth: 1,
+    borderColor: colorWithOpacity(SidebarPalette.WORK_MERGED, 50),
+  },
+  mergedText: {
+    color: SidebarPalette.WORK_MERGED,
+    fontSize: ds(10.5),
+    lineHeight: ds(15),
+  },
+  folderIcon: {
+    width: ds(16),
+    height: ds(16),
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  folderTitle: {
+    color: SIDEBAR_MUTED,
+  },
+  folderCount: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: ds(5),
+  },
+  needsYouDot: {
+    width: ds(6),
+    height: ds(6),
+    borderRadius: ds(3),
+  },
+  folderCountText: {
+    color: SIDEBAR_MUTED,
+    fontSize: ds(11),
+  },
+});
 
 // ---------------------------------------------------------------------------
 // PROJECT_EMPTY: an open project with no sessions (desktop native_sidebar/rows.rs):

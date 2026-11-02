@@ -132,16 +132,27 @@ export function wantsUnifiedSidebar(summary: GhostexMobileSummary | null | undef
 }
 
 /**
+ * Whether the phone draws the Worktrees layout: its own Sessions list setting once set, else what
+ * the computer's Sidebar setting asks for.
+ */
+export function wantsWorktreesLayout(
+  phoneLayout: 'unified' | 'project' | 'worktrees' | null,
+  summary: GhostexMobileSummary | null | undefined,
+): boolean {
+  return phoneLayout !== null ? phoneLayout === 'worktrees' : summary?.sidebarView === 'worktrees';
+}
+
+/**
  * The phone's own Settings › Sessions list values, first taken from what this computer has, so
  * nothing changes for the user until they flip them on the phone.
  */
 export function sessionsListSeedOf(summary: GhostexMobileSummary): {
-  sessionsListLayout: 'unified' | 'project';
+  sessionsListLayout: 'unified' | 'project' | 'worktrees';
   sessionsListGroupByProject: boolean;
   sessionsListWorkingSection: boolean;
 } {
   return {
-    sessionsListLayout: wantsUnifiedSidebar(summary) ? 'unified' : 'project',
+    sessionsListLayout: summary.sidebarView ?? 'project',
     sessionsListGroupByProject: unifiedLayoutOf(summary).groupByProject,
     sessionsListWorkingSection: unifiedSettingsOf(summary).workingSection,
   };

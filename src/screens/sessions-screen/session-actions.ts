@@ -22,6 +22,7 @@ import type {
   ProjectHeaderItem,
   SessionItem,
   SessionKindLabelItem,
+  WorktreeFolderHeaderItem,
 } from '../../contract/grouping';
 import { claudeCloudCloseSleeps } from '../../contract/claudeCloud';
 import type { MenuAnchor } from '../../components/sessions/ContextMenu';
@@ -42,6 +43,11 @@ export type GroupContext = { machine: MachineRecord; item: GroupHeaderItem };
 /** A Parked section heading (the only section heading with a menu). */
 export type ParkedContext = { machine: MachineRecord; item: SessionKindLabelItem };
 export type MachineContext = { machine: MachineRecord };
+export type WorktreeFolderContext = { machine: MachineRecord; item: WorktreeFolderHeaderItem };
+/** What a worktree group's name box is for: New group… from a worktree's menu, or Rename…. */
+export type WorktreeFolderNameEdit =
+  | { kind: 'create'; parentProjectId: string; worktreeProjectId: string }
+  | { kind: 'rename'; folderId: string; title: string };
 
 export type Overlay =
   | { kind: 'none' }
@@ -69,6 +75,8 @@ export type Overlay =
   | { kind: 'collectionRename'; ctx: CollectionContext; error: string | null }
   | { kind: 'groupMenu'; ctx: GroupContext }
   | { kind: 'parkedMenu'; ctx: ParkedContext }
+  | { kind: 'worktreeFolderMenu'; ctx: WorktreeFolderContext }
+  | { kind: 'worktreeFolderName'; machine: MachineRecord; edit: WorktreeFolderNameEdit; error: string | null }
   | { kind: 'machineMenu'; ctx: MachineContext }
   | { kind: 'machinePicker'; purpose: 'select' | 'addProject' }
   /** Header hamburger: Search Prompts, Settings, Logout; at its button on the iPhone Duo (`anchor`). */

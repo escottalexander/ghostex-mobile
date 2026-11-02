@@ -91,7 +91,12 @@ export type SidebarMenuCommand =
       groupId: string;
       action: 'createCollection' | 'moveCollection';
       collectionId?: string;
-    };
+    }
+  /**
+   * A nested worktree's Add to Group › and Remove from Group (gx-core
+   * `worktree_folder_membership_menu`): into folder `folderId`, into a new folder named first, or out.
+   */
+  | { type: 'worktreeFolderMembership'; groupId: string; action: 'move' | 'create' | 'remove'; folderId?: string };
 
 /** One menu row: a label with an action, a submenu, a heading, or a separator. */
 export type SidebarMenuItem = {
@@ -897,7 +902,29 @@ export type ProjectMenuInput = {
   /** The collection the project belongs to, or null. */
   collectionId: string | null;
   collections: readonly GhostexProjectCollection[];
+  /** Worktrees layout, a worktree under its parent: the parent's worktree folders and the one it is in. */
+  worktreeFolders?: { folders: readonly { folderId: string; title: string }[]; currentFolderId: string | null };
 };
+
+/** Add to Group › (the parent's folders, then New group…), and Remove from Group while in one. */
+function worktreeFolderMembershipMenu(
+  groupId: string,
+  membership: NonNullable<ProjectMenuInput['worktreeFolders']>,
+): SidebarMenuItem[] {
+  const children: SidebarMenuItem[] = membership.folders.map((folder) => ({
+    label: folder.title,
+    checked: membership.currentFolderId === folder.folderId,
+    disabled: false,
+    command: { type: 'worktreeFolderMembership', groupId, action: 'move', folderId: folder.folderId },
+  }));
+  if (children.length > 0) children.push(separator());
+  children.push(row('New group…', 'plus', { type: 'worktreeFolderMembership', groupId, action: 'create' }));
+  const items: SidebarMenuItem[] = [{ ...submenu('Add to Group', 'plus', children), presentation: 'page' }];
+  if (membership.currentFolderId !== null) {
+    items.push(row('Remove from Group', 'x', { type: 'worktreeFolderMembership', groupId, action: 'remove' }));
+  }
+  return items;
+}
 
 /** Add to Group (gx-core `project_membership_menu`); Spaces is off on the desktop's defaults. */
 function projectMembershipMenu(input: ProjectMenuInput): SidebarMenuItem[] {
@@ -954,6 +981,9 @@ export function buildProjectMenu(input: ProjectMenuInput): SidebarMenuItem[] {
     row('Copy Path', 'copy', command({ type: 'copyWorkspaceProjectPathForGroup', groupId })),
   ];
   if (input.isWorktree) {
+    if (input.worktreeFolders !== undefined && input.projectId.length > 0) {
+      menu.push(...worktreeFolderMembershipMenu(groupId, input.worktreeFolders));
+    }
     if (input.projectId.length > 0) {
       menu.push(separator());
       menu.push({

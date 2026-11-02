@@ -80,6 +80,7 @@ import { stateWithCollectionTitle } from '../contract/collectionsState';
 import { machineSessionCounts, tabStatusCounts } from '../contract/grouping';
 import { coordinatorRowKey } from '../contract/coordinatorTree';
 import { EMPTY_SIDEBAR_SPACES, type GhostexSession } from '../contract/mobileSummary';
+import { wantsWorktreesLayout } from '../contract/unified/fromSummary';
 import {
   DuoChromeCopy,
   ProgressCopy,
@@ -302,6 +303,8 @@ export default function SessionsScreen({ navigation }: Props) {
       : filterSummaryForWorkspace(summary, selectedWorkspaceId);
   }, [selectedInventory?.summary, selectedWorkspaceId]);
   const machineSpaces = selectedSummary?.sidebarSpaces ?? EMPTY_SIDEBAR_SPACES;
+  const sessionsListLayout = useSettingsStore((state) => state.settings.sessionsListLayout);
+  const worktreesLayout = wantsWorktreesLayout(sessionsListLayout, selectedSummary);
   /*
    * The tile shows whenever the computer has Spaces, and on its own once there is more than one
    * workspace (desktop `native_sidebar_shows_workspace_tile`).
@@ -377,7 +380,9 @@ export default function SessionsScreen({ navigation }: Props) {
           expandedCoordinatorOlderByMachine: collapse.expandedCoordinatorOlderByMachine,
           expandedParkedSessionKeysByMachine: collapse.expandedParkedSessionKeysByMachine,
           expandedDraftSessionKeysByMachine: collapse.expandedDraftSessionKeysByMachine,
+          expandedWorktreeFoldersByMachine: collapse.expandedWorktreeFoldersByMachine,
         },
+        worktreesLayout,
       }),
     [
       machines,
@@ -393,6 +398,8 @@ export default function SessionsScreen({ navigation }: Props) {
       collapse.expandedCoordinatorOlderByMachine,
       collapse.expandedParkedSessionKeysByMachine,
       collapse.expandedDraftSessionKeysByMachine,
+      collapse.expandedWorktreeFoldersByMachine,
+      worktreesLayout,
       sessionListNowMs,
       selectedSessionKey,
     ],
@@ -585,6 +592,8 @@ export default function SessionsScreen({ navigation }: Props) {
     collectionColorItems,
     groupMenuItems,
     parkedMenuItems,
+    worktreeFolderMenuItems,
+    submitWorktreeFolderName,
     machineMenuItems,
     appMenuItems,
     sectionMenuItems,
@@ -684,6 +693,13 @@ export default function SessionsScreen({ navigation }: Props) {
       withMachine(machineId, (target) => setOverlay({ kind: 'agentMenu', ctx: { machine: target, header } })),
     stateCard: (machineId) => setOverlay({ kind: 'recovery', machine: machineById(machineId) }),
     workChipActions: (machineId, item) => workChipActions(machineById(machineId), item.session),
+    toggleWorktreeFolder: (machineId, item) => collapse.toggleWorktreeFolder(machineId, item.folderKey),
+    worktreeFolderMenu: (machineId, item) =>
+      withMachine(
+        machineId,
+        (target) => setOverlay({ kind: 'worktreeFolderMenu', ctx: { machine: target, item } }),
+        true,
+      ),
   };
 
   const listRefreshControl = (
@@ -1194,6 +1210,34 @@ export default function SessionsScreen({ navigation }: Props) {
           subtitle="Session group"
           items={groupMenuItems(overlay.ctx)}
           onClose={() => setOverlay(NONE)}
+        />
+      ) : null}
+
+      {overlay.kind === 'worktreeFolderMenu' ? (
+        <ContextMenu
+          visible
+          title={overlay.ctx.item.title}
+          subtitle="Worktree group"
+          items={worktreeFolderMenuItems(overlay.ctx)}
+          onClose={() => setOverlay(NONE)}
+        />
+      ) : null}
+
+      {overlay.kind === 'worktreeFolderName' ? (
+        <PromptDialog
+          visible
+          title={overlay.edit.kind === 'create' ? 'New group' : 'Rename group'}
+          body={
+            overlay.edit.kind === 'create'
+              ? 'Name the group this worktree moves into.'
+              : "Update this worktree group's name."
+          }
+          placeholder="Group name"
+          initialValue={overlay.edit.kind === 'rename' ? overlay.edit.title : ''}
+          error={overlay.error}
+          confirmLabel={overlay.edit.kind === 'create' ? 'Create' : 'Rename'}
+          onSubmit={(value) => submitWorktreeFolderName(overlay.machine, overlay.edit, value)}
+          onCancel={() => setOverlay(NONE)}
         />
       ) : null}
 

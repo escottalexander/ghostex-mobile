@@ -14,7 +14,7 @@ import { StyleSheet, View } from 'react-native';
 
 import StateCard from '../../components/common/StateCard';
 import type { MenuAnchor } from '../../components/sessions/ContextMenu';
-import type { DrawerBlock, ProjectCardBlock } from '../../components/sessions/drawerModel';
+import type { DrawerBlock, ProjectCardBlock, WorktreeFolderBlock } from '../../components/sessions/drawerModel';
 import {
   CollectionHeaderRow,
   collectionHeaderTint,
@@ -27,6 +27,7 @@ import {
   SessionKindLabelRow,
   SessionListToggleRow,
   TOUCH_ROW_HEIGHT,
+  WorktreeFolderRow,
 } from '../../components/sessions/rows';
 import SessionRow from '../../components/sessions/SessionRow';
 import type { WorkChipActions } from '../../components/sessions/WorkChips';
@@ -39,6 +40,7 @@ import type {
   SessionItem,
   SessionKindLabelItem,
   StateCardItem,
+  WorktreeFolderHeaderItem,
 } from '../../contract/grouping';
 import type { GhostexAgentLauncher, GhostexMobileSummary } from '../../contract/mobileSummary';
 import { colorWithOpacity, SidebarPalette } from '../../theme/palette';
@@ -64,6 +66,8 @@ export type DrawerBlockActions = {
   agentMenu: (machineId: string, header: ProjectHeaderItem) => void;
   stateCard: (machineId: string, item: StateCardItem) => void;
   workChipActions: (machineId: string, item: SessionItem) => WorkChipActions | undefined;
+  toggleWorktreeFolder: (machineId: string, item: WorktreeFolderHeaderItem) => void;
+  worktreeFolderMenu: (machineId: string, item: WorktreeFolderHeaderItem) => void;
 };
 
 export type DrawerBlockViewProps = {
@@ -163,10 +167,15 @@ export default function DrawerBlockView(props: DrawerBlockViewProps): ReactEleme
     }
   };
 
+  const hasFold = (card: ProjectCardBlock): boolean =>
+    card.children.length > 0 || (card.worktrees?.length ?? 0) > 0 || (card.worktreeFolders?.length ?? 0) > 0;
+
   /**
    * A project's open rows, then its session groups indented under it with a tree line from under
    * the project's chevron to each group's header (desktop session_group_tree.rs `project_tree`).
-   * A group's rows are the GROUP_HEADER's following rows of the same group.
+   * A group's rows are the GROUP_HEADER's following rows of the same group. In the Worktrees layout
+   * the project's worktrees, then its worktree folders, follow its session groups on the same line
+   * (worktree_tree.rs).
    */
   const projectFold = (card: ProjectCardBlock): ReactElement => {
     const own: ReactElement[] = [];
@@ -187,27 +196,41 @@ export default function DrawerBlockView(props: DrawerBlockViewProps): ReactEleme
       if (inGroup) group.rows.push(element);
       else own.push(element);
     }
-    if (groups.length === 0) return <View style={styles.rows}>{own}</View>;
+    const branches: { key: string; body: ReactElement }[] = groups.map(({ header, rows }) => ({
+      key: header.key,
+      body: (
+        <>
+          <GroupHeaderRow
+            title={header.title}
+            collapsed={header.collapsed}
+            containsActive={header.containsActive}
+            status={header.status}
+            onPress={() => actions.toggleGroup(machineId, header)}
+            onMenu={() => actions.groupMenu(machineId, header)}
+            onCreateTerminal={() => actions.createGroupTerminal(machineId, header)}
+          />
+          {!header.collapsed && rows.length > 0 ? <View style={styles.rows}>{rows}</View> : null}
+        </>
+      ),
+    }));
+    for (const worktree of card.worktrees ?? []) {
+      branches.push({ key: worktree.header.key, body: nestedWorktree(worktree) });
+    }
+    for (const folder of card.worktreeFolders ?? []) {
+      branches.push({ key: folder.header.key, body: worktreeFolder(folder) });
+    }
+    if (branches.length === 0) return <View style={styles.rows}>{own}</View>;
     return (
       <View style={styles.fold}>
         <View style={styles.foldPart}>
           <View style={styles.rows}>{own}</View>
           <View pointerEvents="none" style={[styles.treeLine, { top: 0, bottom: 0 }]} />
         </View>
-        {groups.map(({ header, rows }, index) => {
-          const last = index === groups.length - 1;
+        {branches.map(({ key, body }, index) => {
+          const last = index === branches.length - 1;
           return (
-            <View key={header.key} style={[styles.foldPart, styles.groupPart]}>
-              <GroupHeaderRow
-                title={header.title}
-                collapsed={header.collapsed}
-                containsActive={header.containsActive}
-                status={header.status}
-                onPress={() => actions.toggleGroup(machineId, header)}
-                onMenu={() => actions.groupMenu(machineId, header)}
-                onCreateTerminal={() => actions.createGroupTerminal(machineId, header)}
-              />
-              {!header.collapsed && rows.length > 0 ? <View style={styles.rows}>{rows}</View> : null}
+            <View key={key} style={[styles.foldPart, styles.groupPart]}>
+              {body}
               <View
                 pointerEvents="none"
                 style={[
@@ -223,10 +246,66 @@ export default function DrawerBlockView(props: DrawerBlockViewProps): ReactEleme
     );
   };
 
+  const projectHeader = (header: ProjectHeaderItem): ReactElement => {
+    const primaryAgent = props.primaryAgent(header);
+    return (
+      <ProjectHeaderRow
+        title={header.title}
+        icon={header.icon}
+        collapsed={header.collapsed}
+        containsActive={header.containsActive}
+        workingCount={header.workingCount}
+        attentionCount={header.attentionCount}
+        questionCount={header.questionCount}
+        approvalCount={header.approvalCount}
+        backgroundWorkCount={header.backgroundWorkCount}
+        awakeCount={header.awakeCount}
+        primaryAgent={primaryAgent}
+        nestedWorktree={header.worktreeNest !== undefined}
+        merged={header.worktreeMerged === true}
+        onToggle={() => actions.toggleProject(machineId, header)}
+        onMenu={() => actions.projectMenu(machineId, header)}
+        onLaunchPrimary={() => {
+          if (primaryAgent !== null) actions.launchPrimary(machineId, header, primaryAgent);
+        }}
+        onCreateTerminal={() => actions.createProjectTerminal(machineId, header)}
+        onOpenAgentMenu={() => actions.agentMenu(machineId, header)}
+      />
+    );
+  };
+
+  /** A worktree drawn inside its parent's block: its header with the branch mark, then (open) its fold. */
+  const nestedWorktree = (card: ProjectCardBlock): ReactElement => (
+    <View>
+      {projectHeader(card.header)}
+      {!card.header.collapsed && hasFold(card) ? projectFold(card) : null}
+    </View>
+  );
+
+  /** A worktree folder's row and, while open, its members at the row's own indent with no line of their own. */
+  const worktreeFolder = (folder: WorktreeFolderBlock): ReactElement => (
+    <View>
+      <WorktreeFolderRow
+        title={folder.header.title}
+        count={folder.header.count}
+        expanded={folder.header.expanded}
+        needsYou={folder.header.needsYou}
+        onPress={() => actions.toggleWorktreeFolder(machineId, folder.header)}
+        onMenu={() => actions.worktreeFolderMenu(machineId, folder.header)}
+      />
+      {folder.header.expanded
+        ? folder.members.map((member) => (
+            <View key={member.header.key} style={styles.folderMember}>
+              {nestedWorktree(member)}
+            </View>
+          ))
+        : null}
+    </View>
+  );
+
   /** A project block: the header, then (open) its fold. `inCollection` drops the 18px block indent (collections.rs). */
   const projectCard = (card: ProjectCardBlock, inCollection: boolean): ReactElement => {
     const header = card.header;
-    const primaryAgent = props.primaryAgent(header);
     return (
       <View
         key={`card:${header.key}`}
@@ -235,27 +314,8 @@ export default function DrawerBlockView(props: DrawerBlockViewProps): ReactEleme
           inCollection && !header.collapsed ? styles.projectInCollectionOpen : null,
         ]}
       >
-        <ProjectHeaderRow
-          title={header.title}
-          icon={header.icon}
-          collapsed={header.collapsed}
-          containsActive={header.containsActive}
-          workingCount={header.workingCount}
-          attentionCount={header.attentionCount}
-          questionCount={header.questionCount}
-          approvalCount={header.approvalCount}
-          backgroundWorkCount={header.backgroundWorkCount}
-          awakeCount={header.awakeCount}
-          primaryAgent={primaryAgent}
-          onToggle={() => actions.toggleProject(machineId, header)}
-          onMenu={() => actions.projectMenu(machineId, header)}
-          onLaunchPrimary={() => {
-            if (primaryAgent !== null) actions.launchPrimary(machineId, header, primaryAgent);
-          }}
-          onCreateTerminal={() => actions.createProjectTerminal(machineId, header)}
-          onOpenAgentMenu={() => actions.agentMenu(machineId, header)}
-        />
-        {!header.collapsed && card.children.length > 0 ? projectFold(card) : null}
+        {projectHeader(header)}
+        {!header.collapsed && hasFold(card) ? projectFold(card) : null}
       </View>
     );
   };
@@ -359,6 +419,9 @@ const styles = StyleSheet.create({
   groupPart: {
     paddingTop: GROUP_GAP,
     paddingLeft: FOLD_REACH + GROUP_INDENT,
+  },
+  folderMember: {
+    paddingTop: GROUP_GAP,
   },
   treeLine: {
     position: 'absolute',

@@ -29,8 +29,11 @@ export type SessionChatTheme = 'dark' | 'light';
 export type MarkedHandoversStyle = 'labels' | 'rule' | 'badge' | 'plain';
 /** Same value space as the desktop app's global Default Agent View setting. */
 export type PreferredAgentInterface = 'terminal' | 'chat';
-/** How the phone draws its sessions list: the desktop's Unified sidebar, or the Project list per computer. */
-export type SessionsListLayout = 'unified' | 'project';
+/**
+ * How the phone draws its sessions list: the desktop's Unified sidebar, the Project list per
+ * computer, or that list with worktrees nested under their parent project (Worktrees).
+ */
+export type SessionsListLayout = 'unified' | 'project' | 'worktrees';
 
 export type GhostexSettings = {
   // Terminal behavior (legacy Android row order).
@@ -98,8 +101,8 @@ export type GhostexSettings = {
   /** Read aloud's speed on this phone, a multiple of the engine's normal rate ({@link READ_ALOUD_RATES}). */
   readAloudRate: number;
   /**
-   * Settings › Sessions list: Unified (every computer's sessions in one list) or Project (one
-   * computer at a time behind its tabs). `null` until it is first taken from the selected computer's
+   * Settings › Sessions list: Unified (every computer's sessions in one list), Project (one
+   * computer at a time behind its tabs) or Worktrees (Project with worktrees nested). `null` until it is first taken from the selected computer's
    * own Sidebar setting (`sessionsListSeedOf`); from then on the phone never follows the computer.
    *
    * CDXC:Sidebar 2026-11-01 DECISION:
@@ -314,7 +317,9 @@ function sanitizeSettings(value: unknown): GhostexSettings {
       ? (record.readAloudRate as number)
       : defaults.readAloudRate,
     sessionsListLayout:
-      record.sessionsListLayout === 'unified' || record.sessionsListLayout === 'project'
+      record.sessionsListLayout === 'unified' ||
+      record.sessionsListLayout === 'project' ||
+      record.sessionsListLayout === 'worktrees'
         ? record.sessionsListLayout
         : defaults.sessionsListLayout,
     sessionsListGroupByProject: bool('sessionsListGroupByProject', defaults.sessionsListGroupByProject),

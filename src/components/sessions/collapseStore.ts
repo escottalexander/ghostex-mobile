@@ -1,9 +1,9 @@
 /**
  * Drawer disclosure state.
  * Matching the desktop gpui sidebar request: on first start EVERYTHING
- * (collections, projects, named groups) is collapsed, so the store tracks
- * EXPANDED sets — absence means collapsed. Projects, collections, and named
- * groups are persisted per machine (AsyncStorage, v2 key); the in-project
+ * (collections, projects, named groups, worktree folders) is collapsed, so the
+ * store tracks EXPANDED sets — absence means collapsed. Projects, collections,
+ * named groups and worktree folders are persisted per machine (AsyncStorage, v2 key); the in-project
  * Browser / Pinned / Sessions kind disclosures keep desktop semantics (default
  * expanded, presence = collapsed). A saved `collapsedSessionLists` entry from
  * the retired 6-row "Show more" collapse is ignored.
@@ -25,6 +25,8 @@ type PersistedMachineDisclosure = {
   collapsedCoordinators?: string[];
   /** Coordinators whose older threads are listed (default tucked away). */
   expandedCoordinatorOlder?: string[];
+  /** Open worktree folders (default closed). */
+  expandedWorktreeFolders?: string[];
 };
 
 type PersistedDisclosure = Record<string, PersistedMachineDisclosure>;
@@ -58,6 +60,8 @@ type CollapseState = {
    * their "N older threads" row (coordinatorTree.ts, the user's 2026-10-07 decision in gx-chat-core).
    */
   expandedCoordinatorOlderByMachine: Record<string, string[]>;
+  /** Persisted per machine: open worktree folders, by worktreeFolderKey() (contract/grouping.ts). */
+  expandedWorktreeFoldersByMachine: Record<string, string[]>;
   /** In-memory per project: Parked always starts collapsed after an app restart. */
   expandedParkedSessionKeysByMachine: Record<string, string[]>;
   /** Drafts starts collapsed on every app launch, like Parked. */
@@ -72,6 +76,7 @@ type CollapseState = {
   toggleSessionKind: (machineId: string, kindCollapseKey: string) => void;
   toggleCoordinator: (machineId: string, coordinatorKey: string) => void;
   toggleCoordinatorOlder: (machineId: string, coordinatorKey: string) => void;
+  toggleWorktreeFolder: (machineId: string, folderKey: string) => void;
   toggleMachine: (machineId: string) => void;
   /**
    * Opens a project and its Drafts heading for a session that just arrived in Drafts
@@ -92,6 +97,7 @@ export const useCollapseStore = create<CollapseState>()((set, get) => {
       collapsedSessionKindsByMachine,
       collapsedCoordinatorsByMachine,
       expandedCoordinatorOlderByMachine,
+      expandedWorktreeFoldersByMachine,
     } = get();
     const persisted: PersistedDisclosure = {};
     const machineIds = new Set([
@@ -101,6 +107,7 @@ export const useCollapseStore = create<CollapseState>()((set, get) => {
       ...Object.keys(collapsedSessionKindsByMachine),
       ...Object.keys(collapsedCoordinatorsByMachine),
       ...Object.keys(expandedCoordinatorOlderByMachine),
+      ...Object.keys(expandedWorktreeFoldersByMachine),
     ]);
     for (const machineId of machineIds) {
       persisted[machineId] = {
@@ -110,6 +117,7 @@ export const useCollapseStore = create<CollapseState>()((set, get) => {
         collapsedSessionKinds: collapsedSessionKindsByMachine[machineId] ?? [],
         collapsedCoordinators: collapsedCoordinatorsByMachine[machineId] ?? [],
         expandedCoordinatorOlder: expandedCoordinatorOlderByMachine[machineId] ?? [],
+        expandedWorktreeFolders: expandedWorktreeFoldersByMachine[machineId] ?? [],
       };
     }
     void AsyncStorage.setItem(DISCLOSURE_STORAGE_KEY, JSON.stringify(persisted));
@@ -122,7 +130,8 @@ export const useCollapseStore = create<CollapseState>()((set, get) => {
       | 'expandedGroupsByMachine'
       | 'collapsedSessionKindsByMachine'
       | 'collapsedCoordinatorsByMachine'
-      | 'expandedCoordinatorOlderByMachine',
+      | 'expandedCoordinatorOlderByMachine'
+      | 'expandedWorktreeFoldersByMachine',
     machineId: string,
     key: string,
   ): void => {
@@ -144,6 +153,7 @@ export const useCollapseStore = create<CollapseState>()((set, get) => {
     collapsedSessionKindsByMachine: {},
     collapsedCoordinatorsByMachine: {},
     expandedCoordinatorOlderByMachine: {},
+    expandedWorktreeFoldersByMachine: {},
     expandedParkedSessionKeysByMachine: {},
     expandedDraftSessionKeysByMachine: {},
     collapsedMachineIds: [],
@@ -156,6 +166,7 @@ export const useCollapseStore = create<CollapseState>()((set, get) => {
       let collapsedSessionKinds: Record<string, string[]> = {};
       let collapsedCoordinators: Record<string, string[]> = {};
       let expandedCoordinatorOlder: Record<string, string[]> = {};
+      let expandedWorktreeFolders: Record<string, string[]> = {};
       try {
         const raw = await AsyncStorage.getItem(DISCLOSURE_STORAGE_KEY);
         if (raw !== null) {
@@ -185,6 +196,10 @@ export const useCollapseStore = create<CollapseState>()((set, get) => {
                 ...expandedCoordinatorOlder,
                 [machineId]: stringArray(record.expandedCoordinatorOlder),
               };
+              expandedWorktreeFolders = {
+                ...expandedWorktreeFolders,
+                [machineId]: stringArray(record.expandedWorktreeFolders),
+              };
             }
           }
         }
@@ -199,6 +214,7 @@ export const useCollapseStore = create<CollapseState>()((set, get) => {
         collapsedSessionKindsByMachine: collapsedSessionKinds,
         collapsedCoordinatorsByMachine: collapsedCoordinators,
         expandedCoordinatorOlderByMachine: expandedCoordinatorOlder,
+        expandedWorktreeFoldersByMachine: expandedWorktreeFolders,
       });
     },
 
@@ -235,6 +251,8 @@ export const useCollapseStore = create<CollapseState>()((set, get) => {
 
     toggleCoordinatorOlder: (machineId, coordinatorKey) =>
       toggleIn('expandedCoordinatorOlderByMachine', machineId, coordinatorKey),
+
+    toggleWorktreeFolder: (machineId, folderKey) => toggleIn('expandedWorktreeFoldersByMachine', machineId, folderKey),
 
     openDrafts: (machineId, projectKey) => {
       const draftsKey = `${projectKey}|drafts`;

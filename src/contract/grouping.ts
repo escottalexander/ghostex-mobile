@@ -25,6 +25,7 @@ import {
   type GhostexSessionGroup,
   visibleSessions,
 } from './mobileSummary';
+import { folderOfWorktree, foldersOfParent } from './worktreeFoldersState';
 
 // ---------------------------------------------------------------------------
 // Item types.
@@ -141,6 +142,45 @@ export type ProjectHeaderItem = {
    */
   agents: GhostexAgentLauncher[];
   quickActions: GhostexQuickAction[];
+  /** Worktrees layout: a worktree drawn inside its parent project's block. */
+  worktreeNest?: WorktreeNest;
+  /** Worktrees layout: a worktree in one of its parent's folders, which hiding empty projects never hides. */
+  inWorktreeFolder?: boolean;
+  /** Worktrees layout: one of this project's worktrees stays, so hiding empty projects keeps it too. */
+  keptByWorktree?: boolean;
+  /** A nested worktree with a session linked to a merged pull request: its header shows "merged". */
+  worktreeMerged?: boolean;
+};
+
+/** Where a nested worktree is drawn: under its parent project, in one of its folders or loose. */
+export type WorktreeNest = {
+  parentProjectKey: string;
+  parentProjectId: string;
+  folderId: string | null;
+};
+
+/**
+ * A worktree folder's row (Worktrees layout): a named group of one parent project's worktrees,
+ * drawn after the parent's loose worktrees. It has no chevron; its open or closed folder icon sits
+ * in the chevron's column.
+ */
+export type WorktreeFolderHeaderItem = {
+  type: 'WORKTREE_FOLDER_HEADER';
+  key: string;
+  machineId: string;
+  /** The parent project's key. */
+  projectKey: string;
+  parentProjectId: string;
+  folderId: string;
+  /** Expansion key: worktreeFolderKey() (persisted per machine). */
+  folderKey: string;
+  title: string;
+  /** How many worktrees the folder holds. */
+  count: number;
+  expanded: boolean;
+  /** While closed, the dot before the count when a member needs the user: red, else pink, else blue. */
+  needsYou: 'approval' | 'question' | 'attention' | null;
+  collectionColor?: string;
 };
 
 export type ProjectEmptyItem = {
@@ -245,7 +285,8 @@ export type DrawerItem =
   | GroupHeaderItem
   | SessionKindLabelItem
   | SessionItem
-  | CoordinatorOlderItem;
+  | CoordinatorOlderItem
+  | WorktreeFolderHeaderItem;
 
 export type DrawerItemType = DrawerItem['type'];
 
@@ -263,6 +304,10 @@ export function projectKeyForSession(session: GhostexSession): string {
 
 export function groupCollapseKey(projectKey: string, groupId: string): string {
   return `${projectKey}|${groupId}`;
+}
+
+export function worktreeFolderKey(parentProjectId: string, folderId: string): string {
+  return `${parentProjectId}|${folderId}`;
 }
 
 /** CDXC:Mobile 2026-09-12 DECISION:
@@ -611,7 +656,74 @@ export type DrawerBuildInput = {
   collapsedCoordinatorKeys?: ReadonlySet<string>;
   /** Coordinators whose older threads the user listed, by coordinatorRowKey() (persisted per machine). */
   expandedCoordinatorOlderKeys?: ReadonlySet<string>;
+  /** The Worktrees layout: worktrees nested under their parent project, with its worktree folders. */
+  worktreesLayout?: boolean;
+  /** Open worktree folders, keyed by worktreeFolderKey() (persisted per machine). Absence = closed. */
+  expandedWorktreeFolderKeys?: ReadonlySet<string>;
 };
+
+/** Whether a session is linked to a pull request in state merged (gx-core groups.rs `links_merged`). */
+function linksMerged(session: GhostexSession): boolean {
+  return (
+    session.links?.items.some((link) => link.state === 'merged') === true || session.work?.pullRequestState === 'merged'
+  );
+}
+
+type WorktreeFamilies = {
+  nestOf: Map<string, WorktreeNest>;
+  /** Each parent's nested worktrees, in project order. */
+  childrenOf: Map<string, string[]>;
+  inFolder: Set<string>;
+  keptParents: Set<string>;
+};
+
+/**
+ * The Worktrees layout's families (gx-core sidebar_view/worktree_folders.rs `nest_worktrees`): a
+ * worktree nests under its parent only when both are drawn in the same container (the top level or
+ * the same project group) and the parent is not a worktree itself; any other worktree stays flat.
+ *
+ * CDXC:Sidebar 2026-11-02 DECISION:
+ * User: the phone gets the same Worktrees layout as the desktop: worktrees nested under their parent project, then the user-named worktree groups, with the same icons, badge and alignment; a folder row opens on a tap, and Add to Group / Remove from Group, Rename… and Delete Group sit in the long-press menus.
+ */
+function worktreeFamilies(
+  summary: GhostexMobileSummary,
+  projectById: ReadonlyMap<string, GhostexProject>,
+  orderedProjectKeys: readonly string[],
+  presentKeys: ReadonlySet<string>,
+): WorktreeFamilies {
+  const collectionOf = new Map<string, string>();
+  for (const collection of summary.projectCollections) {
+    for (const projectId of collection.projectIds) {
+      if (!collectionOf.has(projectId)) collectionOf.set(projectId, collection.collectionId);
+    }
+  }
+  const withSessions = new Set(summary.sessions.map((session) => session.projectId));
+  const families: WorktreeFamilies = {
+    nestOf: new Map(),
+    childrenOf: new Map(),
+    inFolder: new Set(),
+    keptParents: new Set(),
+  };
+  for (const projectKey of orderedProjectKeys) {
+    if (!projectKey.startsWith('id:')) continue;
+    const projectId = projectKey.slice(3);
+    const parentProjectId = projectById.get(projectId)?.worktreeParentProjectId ?? '';
+    if (parentProjectId.length === 0) continue;
+    const parentKey = `id:${parentProjectId}`;
+    const folder = folderOfWorktree(summary.worktreeFolders, projectId);
+    const folderId = folder !== null && folder.parentProjectId === parentProjectId ? folder.folderId : null;
+    if (folderId !== null) families.inFolder.add(projectKey);
+    if (folderId !== null || withSessions.has(projectId)) families.keptParents.add(parentKey);
+    const parentIsWorktree = (projectById.get(parentProjectId)?.worktreeParentProjectId ?? '').length > 0;
+    if (!presentKeys.has(parentKey) || parentIsWorktree) continue;
+    if (collectionOf.get(projectId) !== collectionOf.get(parentProjectId)) continue;
+    families.nestOf.set(projectKey, { parentProjectKey: parentKey, parentProjectId, folderId });
+    const children = families.childrenOf.get(parentKey);
+    if (children === undefined) families.childrenOf.set(parentKey, [projectKey]);
+    else children.push(projectKey);
+  }
+  return families;
+}
 
 /** Puts each expanded coordinator's "N older threads" row after the last row of its tree. */
 function withOlderThreadRows(items: DrawerItem[]): DrawerItem[] {
@@ -655,6 +767,7 @@ export function buildDrawerItems(input: DrawerBuildInput): DrawerItem[] {
     expandedDraftSessionKeys = new Set<string>(),
     collapsedCoordinatorKeys = new Set<string>(),
     expandedCoordinatorOlderKeys = new Set<string>(),
+    expandedWorktreeFolderKeys = new Set<string>(),
     nowMs = Date.now(),
     activeSessionId = null,
   } = input;
@@ -702,6 +815,13 @@ export function buildDrawerItems(input: DrawerBuildInput): DrawerItem[] {
 
   const items: DrawerItem[] = [];
 
+  const families =
+    input.worktreesLayout === true
+      ? worktreeFamilies(summary, projectById, orderedProjectKeys, new Set(sessionsByProjectKey.keys()))
+      : null;
+  const sessionsOfKeys = (keys: readonly string[]): GhostexSession[] =>
+    keys.flatMap((key) => sessionsByProjectKey.get(key) ?? []);
+
   const emitProject = (projectKey: string, collectionColor?: string): void => {
     const allProjectSessions = sessionsByProjectKey.get(projectKey);
     if (allProjectSessions === undefined) return;
@@ -713,7 +833,12 @@ export function buildDrawerItems(input: DrawerBuildInput): DrawerItem[] {
       project !== null ? projectDisplayName(project) : first === null ? 'Project' : displayProjectName(first);
     const projectPath = project !== null ? (project.path ?? '') : first === null ? '' : first.projectPath;
     const legacyGroupId = first === null ? '' : first.groupId;
-    const counts = countSessions(allProjectSessions);
+    const collapsed = !expandedProjectKeys.has(projectKey);
+    // A collapsed parent counts the sessions of the worktrees it hides; an open one counts none.
+    const hiddenFamilySessions =
+      collapsed && families !== null ? sessionsOfKeys(families.childrenOf.get(projectKey) ?? []) : [];
+    const counts = countSessions([...allProjectSessions, ...hiddenFamilySessions]);
+    const nest = families?.nestOf.get(projectKey);
     const icon: GhostexProjectIcon =
       project !== null
         ? project.icon
@@ -762,7 +887,6 @@ export function buildDrawerItems(input: DrawerBuildInput): DrawerItem[] {
     const loneSessionsSection = ownSections.size === 1 && ownSections.has('sessions');
     const shownProjectSessions = projectSessions.filter((session) => !isFolded(session));
 
-    const collapsed = !expandedProjectKeys.has(projectKey);
     items.push({
       type: 'PROJECT_HEADER',
       key: `project:${projectKey}`,
@@ -781,12 +905,16 @@ export function buildDrawerItems(input: DrawerBuildInput): DrawerItem[] {
       backgroundWorkCount: counts.backgroundWorkCount,
       sleepingCount: counts.sleepingCount,
       awakeCount: counts.awakeCount,
-      containsActive: collapsed && allProjectSessions.some(isActive),
+      containsActive: collapsed && (allProjectSessions.some(isActive) || hiddenFamilySessions.some(isActive)),
       collectionColor,
       icon,
       themeColor: project !== null ? project.themeColor : '',
       agents: projectId.length > 0 ? summary.agents : [],
       quickActions: projectId.length > 0 ? (summary.quickActionsByProject[projectId] ?? []) : [],
+      ...(nest !== undefined ? { worktreeNest: nest } : {}),
+      ...(families?.inFolder.has(projectKey) === true ? { inWorktreeFolder: true } : {}),
+      ...(families?.keptParents.has(projectKey) === true ? { keptByWorktree: true } : {}),
+      ...(nest !== undefined && allProjectSessions.some(linksMerged) ? { worktreeMerged: true } : {}),
     });
     if (collapsed) return;
 
@@ -945,6 +1073,48 @@ export function buildDrawerItems(input: DrawerBuildInput): DrawerItem[] {
     emitSessionsWithKindLabels(parkedSessions, '');
   };
 
+  /**
+   * A project, then in the Worktrees layout its family while it is open: its loose worktrees, then
+   * each of its worktree folders in document order with, while open, its members in project order.
+   */
+  const emitFamily = (projectKey: string, collectionColor?: string): void => {
+    emitProject(projectKey, collectionColor);
+    if (families === null || !expandedProjectKeys.has(projectKey) || !projectKey.startsWith('id:')) return;
+    const parentProjectId = projectKey.slice(3);
+    const children = families.childrenOf.get(projectKey) ?? [];
+    const folderOf = (key: string): string | null => families.nestOf.get(key)?.folderId ?? null;
+    for (const child of children) if (folderOf(child) === null) emitProject(child, collectionColor);
+    for (const folder of foldersOfParent(summary.worktreeFolders, parentProjectId)) {
+      const members = children.filter((child) => folderOf(child) === folder.folderId);
+      const folderKey = worktreeFolderKey(parentProjectId, folder.folderId);
+      const expanded = expandedWorktreeFolderKeys.has(folderKey);
+      const status = countSessions(sessionsOfKeys(members));
+      items.push({
+        type: 'WORKTREE_FOLDER_HEADER',
+        key: `worktree-folder:${projectKey}:${folder.folderId}`,
+        machineId,
+        projectKey,
+        parentProjectId,
+        folderId: folder.folderId,
+        folderKey,
+        title: folder.title,
+        count: members.length,
+        expanded,
+        needsYou: expanded
+          ? null
+          : status.approvalCount > 0
+            ? 'approval'
+            : status.questionCount > 0
+              ? 'question'
+              : status.attentionCount > 0
+                ? 'attention'
+                : null,
+        collectionColor,
+      });
+      if (expanded) for (const member of members) emitProject(member, collectionColor);
+    }
+  };
+
   /*
    * Top-level layout mirrors the desktop reference sidebar: a "Projects"
    * section label with colored collection panels (members in project order)
@@ -1008,13 +1178,14 @@ export function buildDrawerItems(input: DrawerBuildInput): DrawerItem[] {
     for (const key of memberKeys) emittedProjectKeys.add(key);
     if (collectionCollapsed) continue;
     for (const key of memberKeys) {
-      emitProject(key, collection.color);
+      if (families?.nestOf.has(key) === true) continue;
+      emitFamily(key, collection.color);
     }
   }
 
   for (const projectKey of orderedProjectKeys) {
-    if (emittedProjectKeys.has(projectKey)) continue;
-    emitProject(projectKey);
+    if (emittedProjectKeys.has(projectKey) || families?.nestOf.has(projectKey) === true) continue;
+    emitFamily(projectKey);
   }
   return withOlderThreadRows(items);
 }

@@ -5,6 +5,7 @@ import { Caption, SectionHeader, SegmentedRow, SettingsScreenLayout, ToggleRow }
 const LAYOUT_OPTIONS: { value: SessionsListLayout; label: string }[] = [
   { value: 'unified', label: 'Unified' },
   { value: 'project', label: 'Project' },
+  { value: 'worktrees', label: 'Worktrees' },
 ];
 
 /**
@@ -30,7 +31,9 @@ export default function SessionsListPage() {
         <Caption>
           {layout === 'unified'
             ? "Every computer's sessions in one list. The filter narrows it by computer, Space or project."
-            : 'One computer at a time: pick it from the tabs, and its sessions show under their projects.'}
+            : layout === 'worktrees'
+              ? 'Like Project, with each worktree under its parent project and in the groups you make for them.'
+              : 'One computer at a time: pick it from the tabs, and its sessions show under their projects.'}
         </Caption>
         {layout === 'unified' ? (
           <>
